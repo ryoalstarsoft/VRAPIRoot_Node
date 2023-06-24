@@ -1,0 +1,134 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+const app = require('../app');
+const debug = require('debug')('VRRoot:server');
+const http = require('http');
+const helper = require('../helper');
+const log = helper.log;
+const commonHelper = helper.common;
+const redis = helper.redis;
+const dnsCacheRedis = helper.dnsCacheRedis;
+const cluster = require('cluster');
+
+if (cluster.isMaster) {
+    var numWorkers = require('os').cpus().length;
+
+    log.info('VRAPIRoot Master cluster setting up total ' + numWorkers + ' workers...');
+
+    for (var i = 0; i < numWorkers; i++) {
+        cluster.fork();
+    }
+
+    cluster.on('online', function (worker) {
+        log.info('Worker: ' + worker.process.pid + ' is online');
+    });
+
+    cluster.on('exit', function (worker, code, signal) {
+        log.warn('Worker ' + worker.process.pid + ' died with code: ' + code + ', and signal: ' + signal);
+        log.info('Starting a new worker to take place of the died one');
+        cluster.fork();
+    });
+}
+else {
+    /**
+     * Get port from environment and store in Express.
+     */
+
+    let port = normalizePort(process.env.PORT || '3000');
+    app.set('port', port);
+
+    /**
+     * Create HTTP server.
+     */
+
+    let server = http.createServer(app);
+
+    /**
+     * Listen on provided port, on all network interfaces.
+     */
+
+    server.on('error', onError);
+    server.on('listening', onListening);
+
+    /**
+     * Normalize a port into a number, string, or false.
+     */
+
+    function normalizePort(val) {
+        let port = parseInt(val, 10);
+
+        if (isNaN(port)) {
+            // named pipe
+            return val;
+        }
+
+        if (port >= 0) {
+            // port number
+            return port;
+        }
+
+        return false;
+    }
+
+    /**
+     * Event listener for HTTP server "error" event.
+     */
+
+    function onError(error) {
+        if (error.syscall !== 'listen') {
+            throw error;
+        }
+
+        let bind = typeof port === 'string'
+            ? 'Pipe ' + port
+            : 'Port ' + port;
+
+        // handle specific listen errors with friendly messages
+        switch (error.code) {
+            case 'EACCES':
+                log.error(bind + ' requires elevated privileges');
+                process.exit(1);
+                break;
+            case 'EADDRINUSE':
+                log.error(bind + ' is already in use');
+                process.exit(1);
+                break;
+            default:
+                throw error;
+        }
+    }
+
+    /**
+     * Event listener for HTTP server "listening" event.
+     */
+
+    function onListening() {
+        let addr = server.address();
+        let bind = typeof addr === 'string'
+            ? 'pipe ' + addr
+            : 'port ' + addr.port;
+        log.info('Listening on ' + bind);
+    }
+
+
+    helper.database.initialize()
+        .then(() => {
+            commonHelper.setDNSServers()
+                .then(() => {
+                    log.info('initializing redis');
+                    return redis.initialize();
+                })
+                .then(() => {
+                    log.info('initializing dnsCacheRedis');
+                    return dnsCacheRedis.initialize();
+                })
+                .then(() => {
+                    log.info('starting server');
+                    server.listen(port);
+                });
+        });
+}
